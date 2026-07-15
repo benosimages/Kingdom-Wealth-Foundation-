@@ -21,7 +21,9 @@ except ImportError:
 
 # ---------- config / env ----------
 HERE = os.path.dirname(os.path.abspath(__file__))
-with open(os.path.join(HERE, "..", "config.yml")) as f:
+_cfg_candidates = [os.path.join(HERE, "..", "config.yml"), os.path.join(HERE, "config.yml")]
+_cfg_path = next(p for p in _cfg_candidates if os.path.exists(p))
+with open(_cfg_path) as f:
     CFG = yaml.safe_load(f)
 
 TOKEN = os.environ["OANDA_TOKEN"]
