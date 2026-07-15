@@ -1,0 +1,28 @@
+# AutoTrader configuration — TJR futures focus (v4)
+
+strategy: tjr          # TJR liquidity-sweep playbook (sweep of prior-day high/low → reversal)
+
+instruments:           # futures-focused universe — no single stocks
+  - SPX500_USD         # S&P 500
+  - NAS100_USD         # Nasdaq 100
+  - US30_USD           # Dow
+  - XAU_USD            # Gold
+  - WTICO_USD          # Oil (WTI)
+  - NATGAS_USD         # Natural gas
+# If the Actions log shows order errors for US30_USD or NATGAS_USD, your OANDA
+# division may not offer them — just delete those lines.
+
+bracket_pct: 1.5       # take-profit safety cap, percent of entry price
+sl_pct: 1.0            # hard stop-loss — your 1% rule
+quick_take_usd: 20     # cash out any trade the moment open profit reaches $20
+daily_goal_usd: 100    # stop opening new trades once realized day P&L >= $100
+max_open_trades: 3     # concurrent positions (equity split across slots)
+max_risk_usd: 30       # skip any trade whose minimum size risks more than this at the stop
+max_trades_per_day: 12
+poll_seconds: 30
+
+# v4 learning rules (bot.py reads these)
+bench_wr_threshold: 0.40   # bench a market winning under 40% of its recent closed trades
+bench_min_trades: 5        # ...once it has at least this many recent trades
+prefer_winners: true       # scan order = best rolling win rate first ("always trade the winning market")
+bounce_to_green: true      # after a stop-out, jump to a market that's up on the day
