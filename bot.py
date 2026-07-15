@@ -40,12 +40,100 @@ GOAL = float(CFG.get("daily_goal_usd", 50))
 MAX_RISK = float(CFG.get("max_risk_usd", 30))
 MAX_TRADES = int(CFG.get("max_trades_per_day", 12))
 POLL = int(CFG.get("poll_seconds", 30))
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+
+
+def notify(msg):
+    """Push to your phone via ntfy.sh (free). Set NTFY_TOPIC secret + subscribe in the ntfy iOS app."""
+    if not NTFY_TOPIC:
+        return
+    try:
+        requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=msg.encode(), timeout=5)
+    except requests.RequestException:
+        pass
 INSTRUMENTS = CFG.get("instruments", ["SPX500_USD", "NAS100_USD", "XAU_USD"])
 STRATEGY = CFG.get("strategy", "ema")
 BENCH_WR = float(CFG.get("bench_wr_threshold", 0.40))
 BENCH_MIN = int(CFG.get("bench_min_trades", 5))
 PREFER_WINNERS = bool(CFG.get("prefer_winners", True))
 BOUNCE_GREEN = bool(CFG.get("bounce_to_green", True))
+
+# ---------- CRO governance layer ("protect capital" spec) ----------
+MIN_SCORE = int(CFG.get("min_trade_score", 85))        # below this: REJECT
+RISK_TIERS = {"A+": 0.005, "A": 0.004, "B": 0.0025}     # risk per trade as % of balance
+MAX_PORTFOLIO_RISK = 0.02                               # max open risk across all positions
+DD_LADDER = [(0.10, 0.0), (0.06, 0.0), (0.04, 0.5), (0.02, 0.75)]  # drawdown -> risk multiplier
+API_FAIL_LIMIT = 5                                      # kill switch: consecutive API failures
+
+
+def risk_multiplier(balance, peak):
+    """Drawdown protection ladder. 6%+: paper-only (0 risk). 10%: hard stop."""
+    if peak <= 0:
+        return 1.0
+    dd = (peak - balance) / peak
+    for level, mult in DD_LADDER:
+        if dd >= level:
+            return mult
+    return 1.0
+
+
+def vol_percentile(series, ins_vol):
+    rets = [abs(series[i] / series[i - 1] - 1) for i in range(max(1, len(series) - 20), len(series))]
+    cur = sum(rets) / len(rets) if rets else ins_vol
+    return min(99, round(50 * cur / ins_vol))
+
+
+INS_VOL = {"SPX500_USD": 0.0019, "NAS100_USD": 0.0025, "US30_USD": 0.0016,
+           "XAU_USD": 0.0021, "WTICO_USD": 0.0028, "NATGAS_USD": 0.0048}
+
+
+def score_setup(inst, direction, series, day_series, prev, stats):
+    """0-100 trade score per the CRO spec. Returns (score, grade, notes)."""
+    notes = []
+    c = series[-1]
+    ivol = INS_VOL.get(inst, 0.0025)
+    # Trend alignment 0-20 (three lookback horizons)
+    bias = sum((2 if series[-1] > series[-n] else -2) for n in (48, 24, 12) if len(series) >= n)
+    trend = 20 if bias * direction >= 4 else (10 if bias * direction > 0 else 0)
+    notes.append(f"trend {trend}/20 (bias {bias:+d})")
+    # Sweep quality 0-20 (depth of raid past prior-day level)
+    hi, lo = prev
+    recent = day_series[-8:]
+    depth = (lo - min(recent)) / lo if direction == 1 else (max(recent) - hi) / hi
+    sweep = 20 if depth > ivol * 1.4 else (12 if depth > ivol * 0.8 else 0)
+    notes.append(f"sweep {sweep}/20")
+    # Structure shift 0-20
+    last3 = day_series[-4:-1]
+    mss = 20 if (direction == 1 and c > max(last3)) or (direction == -1 and c < min(last3)) else 0
+    notes.append(f"MSS {mss}/20")
+    # Retracement/FVG confluence 0-10 (entry not chasing: price within 0.3% of the swept level)
+    conf = 10 if abs(c - (lo if direction == 1 else hi)) / c < 0.003 else 0
+    notes.append(f"retrace {conf}/10")
+    # Session quality 0-10 (NY morning only — statistically the sweep window)
+    ny = ny_now()
+    mins = ny.hour * 60 + ny.minute
+    sess = 10 if 9 * 60 + 30 <= mins <= 12 * 60 else 3
+    notes.append(f"session {sess}/10")
+    # Market regime 0-10 (reject chaos: vol percentile 30-80 is tradeable)
+    vp = vol_percentile(series, ivol)
+    regime = 10 if 30 <= vp <= 80 else (5 if vp < 30 else 0)
+    notes.append(f"regime {regime}/10 (volp {vp})")
+    # Historical match 0-10 (this market's real win rate from the journal)
+    s = stats.get(inst)
+    hist = 10 if s and s["n"] >= 5 and s["w"] / s["n"] >= 0.55 else (5 if not s or s["n"] < 5 else 0)
+    notes.append(f"history {hist}/10")
+    total = trend + sweep + mss + conf + sess + regime + hist
+    grade = "A+" if total >= 95 else ("A" if total >= 90 else ("B" if total >= 85 else "REJECT"))
+    return total, grade, " · ".join(notes)
+
+
+def self_review(stats):
+    """Every-session learning loop: rank markets, log the lesson. Runs without approval."""
+    ranked = sorted(((s["w"] / s["n"], s["pnl"], i) for i, s in stats.items() if s["n"] >= 3), reverse=True)
+    if ranked:
+        best, worst = ranked[0], ranked[-1]
+        log(f"SELF-REVIEW: best {best[2]} (wr {best[0]:.0%}, {best[1]:+.2f}) · "
+            f"worst {worst[2]} (wr {worst[0]:.0%}, {worst[1]:+.2f}) · winners scanned first, cold markets benched")
 
 
 def trade_stats():
@@ -155,12 +243,13 @@ def price_precision(inst):
             "BTC_USD": 1, "WTICO_USD": 3}.get(inst, 2)
 
 
-def place_bracketed(inst, direction, price):
-    """Market order with server-side TP/SL at ±bracket. Returns True if placed."""
+def place_bracketed(inst, direction, price, risk_usd=None):
+    """Market order with server-side TP/SL. Sized by governed risk budget when provided."""
     risk_per_unit = price * SL
-    units = int(MAX_RISK // risk_per_unit)
+    budget = risk_usd if risk_usd is not None else MAX_RISK
+    units = int(budget // risk_per_unit)
     if units < 1:
-        log(f"SKIP {inst}: 1 unit would risk ${risk_per_unit:.2f} > max_risk ${MAX_RISK:.2f}")
+        log(f"SKIP {inst}: 1 unit would risk ${risk_per_unit:.2f} > budget ${budget:.2f}")
         return False
     p = price_precision(inst)
     tp = round(price * (1 + BRACKET * direction), p)
@@ -176,6 +265,7 @@ def place_bracketed(inst, direction, price):
     if fill:
         log(f"ENTER {inst} {'LONG' if direction==1 else 'SHORT'} {units}u @ {fill['price']} "
             f"TP {tp} SL {sl} (risk ~${units*risk_per_unit:.2f})")
+        notify(f"📈 ENTER {inst} {'LONG' if direction==1 else 'SHORT'} @ {fill['price']} (SL {sl})")
         return True
     log(f"Order not filled: {list(j.keys())}")
     return False
@@ -303,7 +393,9 @@ def main():
     log(f"AutoTrader start — env={ENV} strategy={STRATEGY} bracket=±{BRACKET*100:.1f}% "
         f"goal=${GOAL} max_risk=${MAX_RISK}")
     start_balance, _, _ = account_summary()
-    active = 0
+    peak_balance = start_balance
+    api_fails = 0
+    last_review_n = 0
     trades_today = 0
     goal_locked = False
     session_open = ny_now().replace(hour=9, minute=30)
@@ -322,11 +414,17 @@ def main():
 
         try:
             balance, _, _ = account_summary()
+            peak_balance = max(peak_balance, balance)
+            rm = risk_multiplier(balance, peak_balance)
+            if rm == 0.0:
+                log(f"DRAWDOWN PROTECTION: {(peak_balance-balance)/peak_balance:.1%} down — no new trades (paper-only mode). Stops remain live.")
             day_pl = balance - start_balance
+            api_fails = 0
 
             if not goal_locked and day_pl >= GOAL:
                 goal_locked = True
                 log(f"DAILY GOAL HIT (+${day_pl:.2f} ≥ ${GOAL}) — no new trades today.")
+                notify(f"🎯 DAILY GOAL HIT +${day_pl:.2f} — done for the day")
 
             open_list = open_trades()
             open_count = len(open_list)
@@ -338,6 +436,7 @@ def main():
                     j = api("PUT", f"/v3/accounts/{ACCOUNT}/trades/{t['id']}/close")
                     pl = j.get("orderFillTransaction", {}).get("pl", "?")
                     log(f"QUICK TAKE {t['instrument']} trade {t['id']} P&L {pl} (>= ${QUICK_TAKE})")
+                    notify(f"💰 CASH OUT {t['instrument']} +${pl}")
                     open_count -= 1
 
             if open_count < MAX_OPEN:
@@ -347,12 +446,18 @@ def main():
                              params={"state": "CLOSED", "count": 1}).get("trades", [])
                 if closed and float(closed[0].get("realizedPL", 0)) < 0:
                     just_stopped = closed[0]["instrument"]
+                    notify(f"🛑 STOP {just_stopped} {float(closed[0]['realizedPL']):+.2f} — bouncing to a green market")
 
-                if not goal_locked and trades_today < MAX_TRADES:
+                if not goal_locked and trades_today < MAX_TRADES and rm > 0.0:
                     # learn from real trade history: winners first, cold markets benched,
                     # stopped-out market excluded; after a loss, green-today markets lead
+                    stats = trade_stats()
+                    n_closed = sum(s["n"] for s in stats.values())
+                    if n_closed >= last_review_n + 20:
+                        self_review(stats)
+                        last_review_n = n_closed
                     held = {t["instrument"] for t in open_list}
-                    scan = ranked_scan_order(trade_stats(), exclude=just_stopped)
+                    scan = ranked_scan_order(stats, exclude=just_stopped)
                     if BOUNCE_GREEN and just_stopped:
                         scan.sort(key=lambda i: day_change(i) <= 0)  # green-day markets first
                         log(f"Stop-out on {just_stopped} → bouncing to: {scan[:3]}")
@@ -367,13 +472,32 @@ def main():
                             (ny_now() - session_open).total_seconds() // 300)))
                         prev = prev_day_levels(inst) if STRATEGY in ("tjr", "smc") else None
                         sig = signal(STRATEGY, series, series[-bars_today:], prev)
-                        if sig != 0 and place_bracketed(inst, sig, series[-1]):
+                        if sig != 0 and prev:
+                            score, grade, why = score_setup(inst, sig, series, series[-bars_today:], prev, stats)
+                            if score < MIN_SCORE:
+                                log(f"REJECT {inst} score {score}/100 — {why}")
+                                continue
+                            open_risk = len(open_list) * RISK_TIERS["B"]  # conservative estimate
+                            tier = min(RISK_TIERS[grade], max(0.0, MAX_PORTFOLIO_RISK - open_risk))
+                            risk_usd = balance * tier * rm
+                            log(f"TAKE {inst} grade {grade} ({score}/100) risk ${risk_usd:.2f} — {why}")
+                            if place_bracketed(inst, sig, series[-1], risk_usd=risk_usd):
+                                notify(f"✅ {grade} setup: {inst} {'LONG' if sig==1 else 'SHORT'} ({score}/100)")
+                                trades_today += 1
+                                break
+                        elif sig != 0 and place_bracketed(inst, sig, series[-1]):
                             trades_today += 1
                             break
             else:
                 log(f"Holding {open_count} position(s) · day P&L {day_pl:+.2f} · balance ${balance:.2f}")
         except requests.RequestException as e:
-            log(f"API error (will retry): {e}")
+            api_fails += 1
+            log(f"API error {api_fails}/{API_FAIL_LIMIT} (will retry): {e}")
+            if api_fails >= API_FAIL_LIMIT:
+                close_all()
+                log("KILL SWITCH: repeated data failures — flat and exiting. Safety over opportunity.")
+                notify("🛑 KILL SWITCH: data failures — bot flat and stopped")
+                return
 
         time.sleep(POLL)
 
