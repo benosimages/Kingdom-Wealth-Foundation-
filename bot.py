@@ -42,6 +42,58 @@ MAX_TRADES = int(CFG.get("max_trades_per_day", 12))
 POLL = int(CFG.get("poll_seconds", 30))
 INSTRUMENTS = CFG.get("instruments", ["SPX500_USD", "NAS100_USD", "XAU_USD"])
 STRATEGY = CFG.get("strategy", "ema")
+BENCH_WR = float(CFG.get("bench_wr_threshold", 0.40))
+BENCH_MIN = int(CFG.get("bench_min_trades", 5))
+PREFER_WINNERS = bool(CFG.get("prefer_winners", True))
+BOUNCE_GREEN = bool(CFG.get("bounce_to_green", True))
+
+
+def trade_stats():
+    """Learn from real closed trades: per-instrument rolling win rate + P&L (last 100)."""
+    try:
+        j = api("GET", f"/v3/accounts/{ACCOUNT}/trades",
+                params={"state": "CLOSED", "count": 100})
+        stats = {}
+        for t in j.get("trades", []):
+            inst = t.get("instrument")
+            pl = float(t.get("realizedPL", 0))
+            s = stats.setdefault(inst, {"n": 0, "w": 0, "pnl": 0.0})
+            s["n"] += 1
+            s["pnl"] += pl
+            if pl >= 0:
+                s["w"] += 1
+        return stats
+    except requests.RequestException:
+        return {}
+
+
+def day_change(inst):
+    """Percent move since today's open (last daily candle)."""
+    try:
+        j = api("GET", f"/v3/instruments/{inst}/candles",
+                params={"granularity": "D", "count": 1, "price": "M"})
+        c = j["candles"][-1]["mid"]
+        o, cl = float(c["o"]), float(c["c"])
+        return (cl - o) / o
+    except (requests.RequestException, KeyError, IndexError):
+        return 0.0
+
+
+def ranked_scan_order(stats, exclude=None):
+    """Winning markets first; benched (cold) markets removed; stopped-out market excluded."""
+    order = []
+    for inst in INSTRUMENTS:
+        if inst == exclude:
+            continue
+        s = stats.get(inst)
+        if s and s["n"] >= BENCH_MIN and s["w"] / s["n"] < BENCH_WR:
+            log(f"BENCHED {inst}: win rate {s['w']}/{s['n']} below {BENCH_WR:.0%}")
+            continue
+        wr = (s["w"] / s["n"]) if s and s["n"] else 0.5
+        order.append((wr, inst))
+    if PREFER_WINNERS:
+        order.sort(reverse=True)  # best rolling win rate first
+    return [inst for _, inst in order]
 
 
 def log(msg):
@@ -289,21 +341,22 @@ def main():
                     open_count -= 1
 
             if open_count < MAX_OPEN:
-                # detect stop-out → rotate instrument
+                # detect stop-out → bounce to a market that's green today
+                just_stopped = None
                 closed = api("GET", f"/v3/accounts/{ACCOUNT}/trades",
                              params={"state": "CLOSED", "count": 1}).get("trades", [])
-                if closed:
-                    t = closed[0]
-                    if float(t.get("realizedPL", 0)) < 0 and t["instrument"] == INSTRUMENTS[active]:
-                        active = (active + 1) % len(INSTRUMENTS)
-                        log(f"Stop-out on {t['instrument']} → rotating to {INSTRUMENTS[active]}")
+                if closed and float(closed[0].get("realizedPL", 0)) < 0:
+                    just_stopped = closed[0]["instrument"]
 
                 if not goal_locked and trades_today < MAX_TRADES:
-                    # scan ALL instruments every cycle — active first, then the rest
+                    # learn from real trade history: winners first, cold markets benched,
+                    # stopped-out market excluded; after a loss, green-today markets lead
                     held = {t["instrument"] for t in open_list}
-                    order = [active] + [i for i in range(len(INSTRUMENTS)) if i != active]
-                    for i in order:
-                        inst = INSTRUMENTS[i]
+                    scan = ranked_scan_order(trade_stats(), exclude=just_stopped)
+                    if BOUNCE_GREEN and just_stopped:
+                        scan.sort(key=lambda i: day_change(i) <= 0)  # green-day markets first
+                        log(f"Stop-out on {just_stopped} → bouncing to: {scan[:3]}")
+                    for inst in scan:
                         if inst in held:
                             continue  # one position per instrument when stacking
                         try:
@@ -315,7 +368,6 @@ def main():
                         prev = prev_day_levels(inst) if STRATEGY in ("tjr", "smc") else None
                         sig = signal(STRATEGY, series, series[-bars_today:], prev)
                         if sig != 0 and place_bracketed(inst, sig, series[-1]):
-                            active = i
                             trades_today += 1
                             break
             else:
