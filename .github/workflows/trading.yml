@@ -1,0 +1,42 @@
+name: trading-bot
+
+on:
+  schedule:
+    - cron: "25 13 * * 1-5"
+    - cron: "10 19 * * 1-5"
+  workflow_dispatch: {}
+
+concurrency:
+  group: trading-bot
+  cancel-in-progress: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run trading session
+        env:
+          OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+          OANDA_ACCOUNT: ${{ secrets.OANDA_ACCOUNT }}
+          OANDA_ENV: ${{ secrets.OANDA_ENV }}
+        run: python bot.py
+      - name: Nightly tear sheet (quantstats)
+        if: always()
+        env:
+          OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+          OANDA_ACCOUNT: ${{ secrets.OANDA_ACCOUNT }}
+          OANDA_ENV: ${{ secrets.OANDA_ENV }}
+        run: python report.py || true
+      - name: Upload tear sheet
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tearsheet
+          path: reports/
+          if-no-files-found: ignore
