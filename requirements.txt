@@ -1,0 +1,7 @@
+requests>=2.31
+PyYAML>=6.0
+flask>=3.0
+pandas>=2.0
+pandas-ta>=0.3.14   # 130+ indicators — signals now computed with it when available
+quantstats>=0.0.62  # nightly tear sheet: Sharpe, drawdown, win rate
+alpaca-py>=0.21     # optional second broker — free paper trading for US stocks (NVDA/TSLA/COIN legs)

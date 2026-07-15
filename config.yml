@@ -1,0 +1,26 @@
+# AutoTrader configuration — edit freely, the bot reads this at startup.
+
+strategy: rsi2         # ema | orb | vwap | tjr | box | rsi2 | smc — v3 autopilot starts here
+win_rate_target: 0.60  # informational: v3 app rotates strategies below this rolling win rate
+max_open_trades: 3     # v3 allows up to 3 concurrent positions (max 2 per instrument)
+
+instruments:           # candidates after a stop-out (bot picks the next-best, not just the next)
+  - SPX500_USD         # S&P 500 CFD
+  - NAS100_USD         # Nasdaq 100 CFD
+  - XAU_USD            # Gold
+  - BTC_USD            # Bitcoin CFD — availability varies by region on OANDA
+  - WTICO_USD          # Oil (West Texas crude)
+  - US30_USD           # Dow futures CFD
+  - XAG_USD            # Silver
+  - NATGAS_USD         # Natural gas
+  - DE30_EUR           # DAX futures CFD (EUR-denominated)
+# NVDA (single stock) is NOT tradable on OANDA — needs a stock broker like Alpaca.
+# 'news' strategy is simulator-only for now; live news trading needs an economic-calendar feed.
+
+bracket_pct: 1.5       # take-profit safety cap, percent of entry price
+sl_pct: 3.0            # hard stop-loss, percent of entry price (v3 setting)
+quick_take_usd: 10     # close any trade the moment its open profit reaches this (v3 setting)
+daily_goal_usd: 100    # stop opening new trades once realized day P&L >= this (v3 setting)
+max_risk_usd: 30       # skip any trade whose minimum 1-unit size risks more than this at the stop
+max_trades_per_day: 12
+poll_seconds: 30       # how often to check prices/signals
