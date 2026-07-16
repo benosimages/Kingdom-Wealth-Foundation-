@@ -2,15 +2,22 @@
 
 strategy: tjr          # TJR liquidity-sweep playbook (sweep of prior-day high/low → reversal)
 
-instruments:           # futures-focused universe — no single stocks
+instruments:           # expanded universe — indices, metals, energy, crypto, FX majors
   - SPX500_USD         # S&P 500
   - NAS100_USD         # Nasdaq 100
   - US30_USD           # Dow
   - XAU_USD            # Gold
+  - XAG_USD            # Silver
   - WTICO_USD          # Oil (WTI)
   - NATGAS_USD         # Natural gas
-# If the Actions log shows order errors for US30_USD or NATGAS_USD, your OANDA
-# division may not offer them — just delete those lines.
+  - BTC_USD            # Bitcoin
+  - ETH_USD            # Ethereum
+  - EUR_USD            # Euro
+  - GBP_USD            # Pound
+  - USD_JPY            # Yen
+  - AUD_USD            # Aussie
+# If the Actions log shows order errors for any symbol, your OANDA division
+# may not offer it — just delete that line.
 
 bracket_pct: 1.5       # take-profit safety cap, percent of entry price
 sl_pct: 1.0            # hard stop-loss — your 1% rule
@@ -18,7 +25,8 @@ quick_take_usd: 0      # 0 = disabled — winners ride to the +1.5% take-profit 
 daily_goal_usd: 100    # stop opening new trades once realized day P&L >= $100
 max_open_trades: 3     # concurrent positions (equity split across slots)
 max_risk_usd: 30       # skip any trade whose minimum size risks more than this at the stop
-max_trades_per_day: 12
+min_risk_usd: 20       # floor for small accounts — ensures at least ~1% risk can size a real position
+max_trades_per_day: 6  # research: profitable small-account traders take 2-3 A+ setups, not 12
 poll_seconds: 30
 
 # v4 learning rules (bot.py reads these)

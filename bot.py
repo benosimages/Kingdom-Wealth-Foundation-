@@ -38,6 +38,7 @@ QUICK_TAKE = float(CFG.get("quick_take_usd", 10))
 MAX_OPEN = int(CFG.get("max_open_trades", 3))
 GOAL = float(CFG.get("daily_goal_usd", 50))
 MAX_RISK = float(CFG.get("max_risk_usd", 30))
+MIN_RISK = float(CFG.get("min_risk_usd", 20))
 MAX_TRADES = int(CFG.get("max_trades_per_day", 12))
 POLL = int(CFG.get("poll_seconds", 30))
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
@@ -51,6 +52,33 @@ def notify(msg):
         requests.post(f"https://ntfy.sh/{NTFY_TOPIC}", data=msg.encode(), timeout=5)
     except requests.RequestException:
         pass
+
+
+_NEWS_CACHE = {"t": 0, "events": []}
+
+
+def news_veto():
+    """Real economic calendar (ForexFactory free feed): no trading 30 min before/after
+    high-impact USD events. Returns the event name if vetoed, else None."""
+    import time as _t
+    now = _t.time()
+    if now - _NEWS_CACHE["t"] > 1800:  # refresh every 30 min
+        try:
+            r = requests.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json", timeout=10)
+            r.raise_for_status()
+            _NEWS_CACHE["events"] = [e for e in r.json()
+                                     if e.get("impact") == "High" and e.get("country") in ("USD", "ALL")]
+            _NEWS_CACHE["t"] = now
+        except (requests.RequestException, ValueError):
+            pass  # feed down: fall back to volatility-regime check only
+    for e in _NEWS_CACHE["events"]:
+        try:
+            ts = datetime.fromisoformat(e["date"]).timestamp()
+        except (KeyError, ValueError):
+            continue
+        if abs(now - ts) <= 1800:
+            return e.get("title", "high-impact news")
+    return None
 INSTRUMENTS = CFG.get("instruments", ["SPX500_USD", "NAS100_USD", "XAU_USD"])
 STRATEGY = CFG.get("strategy", "ema")
 BENCH_WR = float(CFG.get("bench_wr_threshold", 0.40))
@@ -59,9 +87,11 @@ PREFER_WINNERS = bool(CFG.get("prefer_winners", True))
 BOUNCE_GREEN = bool(CFG.get("bounce_to_green", True))
 
 # ---------- CRO governance layer ("protect capital" spec) ----------
-MIN_SCORE = int(CFG.get("min_trade_score", 85))        # below this: REJECT
-RISK_TIERS = {"A+": 0.005, "A": 0.004, "B": 0.0025}     # risk per trade as % of balance
-MAX_PORTFOLIO_RISK = 0.02                               # max open risk across all positions
+MIN_SCORE = int(CFG.get("min_trade_score", 80))        # below this: REJECT
+RISK_TIERS = {"A+": 0.010, "A": 0.0075, "B": 0.005}    # research: 0.5-1% fixed for small accounts
+MAX_PORTFOLIO_RISK = 0.025                              # max open risk across all positions
+DAILY_LOSS_CAP = 0.02                                   # stop trading the day at -2% of start balance
+MAX_CONSEC_LOSSES = 2                                   # stop the day after 2 straight losses
 DD_LADDER = [(0.10, 0.0), (0.06, 0.0), (0.04, 0.5), (0.02, 0.75)]  # drawdown -> risk multiplier
 API_FAIL_LIMIT = 5                                      # kill switch: consecutive API failures
 
@@ -84,7 +114,9 @@ def vol_percentile(series, ins_vol):
 
 
 INS_VOL = {"SPX500_USD": 0.0019, "NAS100_USD": 0.0025, "US30_USD": 0.0016,
-           "XAU_USD": 0.0021, "WTICO_USD": 0.0028, "NATGAS_USD": 0.0048}
+           "XAU_USD": 0.0021, "XAG_USD": 0.0026, "WTICO_USD": 0.0028, "NATGAS_USD": 0.0048,
+           "BTC_USD": 0.0034, "ETH_USD": 0.0040,
+           "EUR_USD": 0.0006, "GBP_USD": 0.0007, "USD_JPY": 0.0007, "AUD_USD": 0.0008}
 
 
 def score_setup(inst, direction, series, day_series, prev, stats):
@@ -239,21 +271,24 @@ def open_trades():
 
 
 def price_precision(inst):
-    return {"SPX500_USD": 1, "NAS100_USD": 1, "XAU_USD": 3,
-            "BTC_USD": 1, "WTICO_USD": 3}.get(inst, 2)
+    return {"SPX500_USD": 1, "NAS100_USD": 1, "US30_USD": 1, "XAU_USD": 3, "XAG_USD": 4,
+            "BTC_USD": 1, "ETH_USD": 2, "WTICO_USD": 3, "NATGAS_USD": 4,
+            "EUR_USD": 5, "GBP_USD": 5, "USD_JPY": 3, "AUD_USD": 5}.get(inst, 2)
 
 
-def place_bracketed(inst, direction, price, risk_usd=None):
-    """Market order with server-side TP/SL. Sized by governed risk budget when provided."""
-    risk_per_unit = price * SL
+def place_bracketed(inst, direction, price, risk_usd=None, sl_price=None, tp_price=None):
+    """Market order with server-side TP/SL. Structural levels when provided; else % bracket."""
+    p = price_precision(inst)
+    sl = round(sl_price, p) if sl_price else round(price * (1 - SL * direction), p)
+    tp = round(tp_price, p) if tp_price else round(price * (1 + BRACKET * direction), p)
+    risk_per_unit = abs(price - sl)
+    if risk_per_unit <= 0:
+        return False
     budget = risk_usd if risk_usd is not None else MAX_RISK
     units = int(budget // risk_per_unit)
     if units < 1:
         log(f"SKIP {inst}: 1 unit would risk ${risk_per_unit:.2f} > budget ${budget:.2f}")
         return False
-    p = price_precision(inst)
-    tp = round(price * (1 + BRACKET * direction), p)
-    sl = round(price * (1 - SL * direction), p)
     body = {"order": {
         "type": "MARKET", "instrument": inst, "units": str(units * direction),
         "timeInForce": "FOK", "positionFill": "DEFAULT",
@@ -269,6 +304,31 @@ def place_bracketed(inst, direction, price, risk_usd=None):
         return True
     log(f"Order not filled: {list(j.keys())}")
     return False
+
+
+def move_stop_to_breakeven(t):
+    """Once a trade is up ~1R, lock it risk-free: stop moves to entry (research: protect winners)."""
+    try:
+        entry = float(t["price"])
+        inst = t["instrument"]
+        sl_id = t.get("stopLossOrder", {})
+        cur_sl = float(sl_id.get("price", 0) or 0)
+        units = float(t.get("currentUnits", t.get("initialUnits", 0)))
+        risk = abs(entry - cur_sl)
+        upl = float(t.get("unrealizedPL", 0))
+        if cur_sl == 0 or risk <= 0 or abs(units) < 1:
+            return
+        # already at/past breakeven?
+        if (units > 0 and cur_sl >= entry) or (units < 0 and cur_sl <= entry):
+            return
+        if upl >= risk * abs(units):  # ~1R in profit
+            p = price_precision(inst)
+            api("PUT", f"/v3/accounts/{ACCOUNT}/trades/{t['id']}/orders",
+                data=json.dumps({"stopLoss": {"price": f"{entry:.{p}f}", "timeInForce": "GTC"}}))
+            log(f"BREAKEVEN {inst} trade {t['id']}: stop moved to entry {entry} — trade is now risk-free")
+            notify(f"🔒 {inst} risk-free — stop moved to entry")
+    except (requests.RequestException, KeyError, ValueError):
+        pass
 
 
 def close_all():
@@ -397,6 +457,9 @@ def main():
     api_fails = 0
     last_review_n = 0
     trades_today = 0
+    consec_losses = 0
+    last_seen_closed = None
+    day_stopped = False
     goal_locked = False
     session_open = ny_now().replace(hour=9, minute=30)
 
@@ -426,8 +489,30 @@ def main():
                 log(f"DAILY GOAL HIT (+${day_pl:.2f} ≥ ${GOAL}) — no new trades today.")
                 notify(f"🎯 DAILY GOAL HIT +${day_pl:.2f} — done for the day")
 
+            # research guardrails: daily loss cap + consecutive-loss stop
+            if not day_stopped and day_pl <= -start_balance * DAILY_LOSS_CAP:
+                day_stopped = True
+                log(f"DAILY LOSS CAP: {day_pl:+.2f} ≤ -{DAILY_LOSS_CAP:.0%} of start — done for the day. Tomorrow is a new book.")
+                notify(f"🛑 Daily loss cap hit ({day_pl:+.2f}) — no more trades today")
+            recent_closed = api("GET", f"/v3/accounts/{ACCOUNT}/trades",
+                                params={"state": "CLOSED", "count": 1}).get("trades", [])
+            if recent_closed and recent_closed[0]["id"] != last_seen_closed:
+                last_seen_closed = recent_closed[0]["id"]
+                if float(recent_closed[0].get("realizedPL", 0)) < 0:
+                    consec_losses += 1
+                    if consec_losses >= MAX_CONSEC_LOSSES and not day_stopped:
+                        day_stopped = True
+                        log(f"{MAX_CONSEC_LOSSES} consecutive losses — stopping the day (revenge-trading guard).")
+                        notify("🛑 2 straight losses — bot stopped for the day, capital protected")
+                else:
+                    consec_losses = 0
+
             open_list = open_trades()
             open_count = len(open_list)
+
+            # protect winners: move stops to breakeven at ~1R
+            for t in open_list:
+                move_stop_to_breakeven(t)
 
             # quick-take on every open trade, every cycle (stop stays server-side)
             for t in open_list:
@@ -448,7 +533,12 @@ def main():
                     just_stopped = closed[0]["instrument"]
                     notify(f"🛑 STOP {just_stopped} {float(closed[0]['realizedPL']):+.2f} — bouncing to a green market")
 
-                if not goal_locked and trades_today < MAX_TRADES and rm > 0.0:
+                if not goal_locked and not day_stopped and trades_today < MAX_TRADES and rm > 0.0:
+                    veto = news_veto()
+                    if veto:
+                        log(f"NEWS VETO: {veto} within 30 min — standing aside (real calendar feed).")
+                        time.sleep(POLL)
+                        continue
                     # learn from real trade history: winners first, cold markets benched,
                     # stopped-out market excluded; after a loss, green-today markets lead
                     stats = trade_stats()
@@ -477,14 +567,36 @@ def main():
                             if score < MIN_SCORE:
                                 log(f"REJECT {inst} score {score}/100 — {why}")
                                 continue
+                            # structural exits (research-backed): stop beyond the swept extreme
+                            # + small buffer (capped at the -1% rule), target = opposing liquidity, min 2R
+                            hi, lo = prev
+                            day_seg = series[-bars_today:]
+                            recent8 = day_seg[-8:]
+                            price_now = series[-1]
+                            if sig == 1:
+                                struct_sl = min(recent8) * (1 - 0.0005)
+                                struct_sl = max(struct_sl, price_now * (1 - SL))  # never wider than the 1% cap
+                                struct_tp = hi
+                            else:
+                                struct_sl = max(recent8) * (1 + 0.0005)
+                                struct_sl = min(struct_sl, price_now * (1 + SL))
+                                struct_tp = lo
+                            rr = abs(struct_tp - price_now) / max(abs(price_now - struct_sl), 1e-9)
+                            if rr < 2.0:
+                                log(f"REJECT {inst} RR {rr:.1f} < 2.0 to opposing liquidity — not worth the risk")
+                                continue
                             open_risk = len(open_list) * RISK_TIERS["B"]  # conservative estimate
                             tier = min(RISK_TIERS[grade], max(0.0, MAX_PORTFOLIO_RISK - open_risk))
-                            risk_usd = balance * tier * rm
-                            log(f"TAKE {inst} grade {grade} ({score}/100) risk ${risk_usd:.2f} — {why}")
-                            if place_bracketed(inst, sig, series[-1], risk_usd=risk_usd):
-                                notify(f"✅ {grade} setup: {inst} {'LONG' if sig==1 else 'SHORT'} ({score}/100)")
+                            risk_usd = max(balance * tier * rm, MIN_RISK * rm)
+                            log(f"TAKE {inst} grade {grade} ({score}/100) risk ${risk_usd:.2f} RR {rr:.1f} — {why}")
+                            if place_bracketed(inst, sig, price_now, risk_usd=risk_usd,
+                                               sl_price=struct_sl, tp_price=struct_tp):
+                                notify(f"✅ {grade} setup: {inst} {'LONG' if sig==1 else 'SHORT'} ({score}/100, {rr:.1f}R)")
                                 trades_today += 1
-                                break
+                                if len(open_list) + 1 >= MAX_OPEN:
+                                    break  # slots full; else keep scanning for more setups
+                                open_list.append({"instrument": inst})
+                                held.add(inst)
                         elif sig != 0 and place_bracketed(inst, sig, series[-1]):
                             trades_today += 1
                             break

@@ -1,0 +1,24 @@
+name: night-watch
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # every hour, 24/7 — market intel + phone alerts
+  workflow_dispatch: {}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Scan markets and push alerts
+        env:
+          OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+          OANDA_ACCOUNT: ${{ secrets.OANDA_ACCOUNT }}
+          OANDA_ENV: ${{ secrets.OANDA_ENV }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python nightwatch.py
