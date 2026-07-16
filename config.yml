@@ -14,7 +14,7 @@ instruments:           # futures-focused universe — no single stocks
 
 bracket_pct: 1.5       # take-profit safety cap, percent of entry price
 sl_pct: 1.0            # hard stop-loss — your 1% rule
-quick_take_usd: 20     # cash out any trade the moment open profit reaches $20
+quick_take_usd: 0      # 0 = disabled — winners ride to the +1.5% take-profit or trail, no early cash-out
 daily_goal_usd: 100    # stop opening new trades once realized day P&L >= $100
 max_open_trades: 3     # concurrent positions (equity split across slots)
 max_risk_usd: 30       # skip any trade whose minimum size risks more than this at the stop

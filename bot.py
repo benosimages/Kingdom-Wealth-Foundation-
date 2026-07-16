@@ -432,7 +432,7 @@ def main():
             # quick-take on every open trade, every cycle (stop stays server-side)
             for t in open_list:
                 upl = float(t.get("unrealizedPL", 0))
-                if upl >= QUICK_TAKE:
+                if QUICK_TAKE > 0 and upl >= QUICK_TAKE:
                     j = api("PUT", f"/v3/accounts/{ACCOUNT}/trades/{t['id']}/close")
                     pl = j.get("orderFillTransaction", {}).get("pl", "?")
                     log(f"QUICK TAKE {t['instrument']} trade {t['id']} P&L {pl} (>= ${QUICK_TAKE})")
