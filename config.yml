@@ -1,7 +1,7 @@
 # AutoTrader configuration — TJR futures focus (v4)
 
 strategy: tjr          # TJR liquidity-sweep playbook (sweep of prior-day high/low → reversal)
-
+min_trade_score: 65
 instruments:           # expanded universe — indices, metals, energy, crypto, FX majors
   - SPX500_USD         # S&P 500
   - NAS100_USD         # Nasdaq 100
