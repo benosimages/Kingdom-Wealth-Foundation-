@@ -1,0 +1,44 @@
+name: trading-bot
+
+on:
+  schedule:
+    # GitHub cron is UTC. 13:25 UTC = 9:25 AM EDT (Mar–Nov). In winter (EST) shift to 14:25.
+    - cron: "25 13 * * 1-5"   # morning shift — covers open until ~3:15 PM ET
+    - cron: "45 13 * * 1-5"   # catch-up — no-op if morning shift started (concurrency group)
+    - cron: "10 19 * * 1-5"   # afternoon shift — covers through the 4:00 PM close
+  workflow_dispatch: {}        # manual "Run workflow" button for testing
+
+concurrency:
+  group: trading-bot           # never two bots at once
+  cancel-in-progress: false
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350       # under GitHub's 6h job cap; bot exits itself at market close
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r bot/requirements.txt
+      - name: Run trading session
+        env:
+          OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+          OANDA_ACCOUNT: ${{ secrets.OANDA_ACCOUNT }}
+          OANDA_ENV: ${{ secrets.OANDA_ENV }}
+        run: python bot/bot.py
+      - name: Nightly tear sheet (quantstats)
+        if: always()
+        env:
+          OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+          OANDA_ACCOUNT: ${{ secrets.OANDA_ACCOUNT }}
+          OANDA_ENV: ${{ secrets.OANDA_ENV }}
+        run: python bot/report.py || true
+      - name: Upload tear sheet
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tearsheet
+          path: reports/
+          if-no-files-found: ignore
