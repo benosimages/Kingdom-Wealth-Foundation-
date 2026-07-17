@@ -1,0 +1,5 @@
+date,instrument,direction,grade,score,rr_planned,risk_usd,entry,exit,realized_pl,outcome,notes
+2026-07-17,EUR_USD,LONG,C,70,4.1,510.0,1.14428,1.14339,-546.87,loss,trend 20/20 (bias +6) · sweep 0/20 · MSS 20/20 · retrace 10/10 · session 10/10 · regime 5/10 (volp 12) · history 5/10
+2026-07-17,AUD_USD,LONG,C,75,2.7,507.27,0.69876,0.69833,-232.05,loss,trend 20/20 (bias +6) · sweep 12/20 · MSS 20/20 · retrace 10/10 · session 3/10 · regime 5/10 (volp 13) · history 5/10
+2026-07-17,AUD_USD,LONG,,,,,0.69867,0.69833,-0.00,loss,
+2026-07-17,USD_JPY,SHORT,C,53,3.7,507.27,162.414,162.463,-1.27,loss,trend 10/20 (bias -2) · sweep 0/20 · MSS 20/20 · retrace 10/10 · session 3/10 · regime 5/10 (volp 6) · history 5/10
