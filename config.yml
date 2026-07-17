@@ -1,12 +1,12 @@
-
 # AutoTrader configuration — CHALLENGE MODE (funded-account simulator, forex majors)
-# Practice account = your evaluation simulator. Typical prop rules: hit +8-10%,
-# never lose 5% in a day, never 10% total. This bot's built-in caps (-2%/day,
-# risk freeze at -6% drawdown) are STRICTER, so a passing run here passes a real eval.
+# TJR v2 settings — chosen from the 30-day offline backtest (tjr2_report.md):
+# score>=50 / RR>=1.2 gave 52 trades, 73% WR, +$23,089, worst day -$136.
+# Caveats: no spread/slippage in the model; 30-day sample. Judge live via journal.csv.
 
 strategy: tjr
-min_trade_score: 65
-instruments:           # forex majors only — confirmed tradeable on this OANDA division
+min_trade_score: 50    # backtest: scores top out at 70 — 80 blocks everything
+min_rr: 1.2            # target still = opposing liquidity; 2.0 rejected too many winners
+instruments:
   - EUR_USD
   - GBP_USD
   - USD_JPY
@@ -14,10 +14,10 @@ instruments:           # forex majors only — confirmed tradeable on this OANDA
 
 bracket_pct: 1.5
 sl_pct: 1.0            # hard stop — 1% rule
-quick_take_usd: 0      # winners ride to structure targets (min 2R)
-daily_goal_usd: 300    # challenge pace: +8% on 100k over ~30 days ≈ $270/day; lock in at 300
+quick_take_usd: 0      # winners ride to structure targets
+daily_goal_usd: 300    # challenge pace: +8% on 100k over ~30 days; lock in at 300
 max_open_trades: 3
-max_risk_usd: 1000     # 1% of 100k ceiling (A+ tier); grade tiers size below this
+max_risk_usd: 1000
 min_risk_usd: 20
 max_trades_per_day: 6
 poll_seconds: 30
