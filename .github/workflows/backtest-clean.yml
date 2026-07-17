@@ -1,0 +1,31 @@
+name: backtest-clean
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run 30-day backtest
+        env:
+          OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+          OANDA_ACCOUNT: ${{ secrets.OANDA_ACCOUNT }}
+          OANDA_ENV: ${{ secrets.OANDA_ENV }}
+        run: python backtest-2.py
+      - name: Commit results
+        run: |
+          git config user.name "trading-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git pull --rebase || true
+          git add backtest_report.md backtest_trades.csv
+          git diff --cached --quiet || (git commit -m "backtest: $(date -u +%F)" && git push)
