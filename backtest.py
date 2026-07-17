@@ -151,7 +151,7 @@ def main():
         rr = abs(tp - c) / max(abs(c - sl), 1e-9)
         if rr < 2.0:
             continue
-        risk_usd = BALANCE * bot.RISK_TIERS[grade]
+        risk_usd = BALANCE * bot.risk_usd = BALANCE * bot.RISK_TIERS.get(grade, min(bot.RISK_TIERS.values()))
         units = risk_usd / max(abs(c - sl), 1e-9)
         open_pos[inst] = {"date": str(d), "time": ny.strftime("%H:%M"), "inst": inst,
                           "dir": sig, "grade": grade, "score": score, "rr": round(rr, 2),
