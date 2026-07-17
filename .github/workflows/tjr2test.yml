@@ -1,0 +1,32 @@
+name: tjr2test
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  tjr2test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Run TJR v2 backtest
+        env:
+          OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+          OANDA_ACCOUNT: ${{ secrets.OANDA_ACCOUNT }}
+          OANDA_ENV: ${{ secrets.OANDA_ENV }}
+        run: python tjr2test.py
+      - name: Commit results
+        run: |
+          git config user.name "trading-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git pull --rebase || true
+          git add tjr2_report.md || true
+          git add tjr2_trades.csv || true
+          git diff --cached --quiet || (git commit -m "tjr2test: $(date -u +%F)" && git push)
