@@ -10,6 +10,9 @@ concurrency:
   group: trading-bot
   cancel-in-progress: false
 
+permissions:
+  contents: write   # lets the job commit journal.csv back to the repo
+
 jobs:
   trade:
     runs-on: ubuntu-latest
@@ -25,7 +28,25 @@ jobs:
           OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
           OANDA_ACCOUNT: ${{ secrets.OANDA_ACCOUNT }}
           OANDA_ENV: ${{ secrets.OANDA_ENV }}
-        run: python bot.py
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          set -o pipefail
+          python bot.py 2>&1 | tee session.log
+      - name: Build trade journal (score → outcome record)
+        if: always()
+        env:
+          OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+          OANDA_ACCOUNT: ${{ secrets.OANDA_ACCOUNT }}
+          OANDA_ENV: ${{ secrets.OANDA_ENV }}
+        run: python journal.py session.log || true
+      - name: Commit journal
+        if: always()
+        run: |
+          git config user.name "trading-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git pull --rebase || true
+          git add journal.csv 2>/dev/null || true
+          git diff --cached --quiet || (git commit -m "journal: $(date -u +%F) session" && git push)
       - name: Nightly tear sheet (quantstats)
         if: always()
         env:
@@ -40,3 +61,11 @@ jobs:
           name: tearsheet
           path: reports/
           if-no-files-found: ignore
+      - name: Alert phone if the bot failed
+        if: failure()
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          if [ -n "$NTFY_TOPIC" ]; then
+            curl -s -d "🚨 TRADING BOT FAILED — check GitHub Actions now. Stops on open trades are still live on OANDA." "https://ntfy.sh/$NTFY_TOPIC"
+          fi
