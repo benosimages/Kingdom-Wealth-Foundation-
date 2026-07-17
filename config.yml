@@ -5,7 +5,7 @@
 # risk freeze at -6% drawdown) are STRICTER, so a passing run here passes a real eval.
 
 strategy: tjr
-min_trade_score: 80
+min_trade_score: 65
 instruments:           # forex majors only — confirmed tradeable on this OANDA division
   - EUR_USD
   - GBP_USD
